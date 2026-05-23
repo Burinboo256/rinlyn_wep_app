@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
+import bcrypt from 'bcryptjs';
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data.db');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -68,6 +69,29 @@ function init(db: DatabaseSync) {
   `);
 
   safeAddColumn(db, 'customers', 'next_contact_date TEXT');
+
+  bootstrapDefaultAdmin(db);
+}
+
+function bootstrapDefaultAdmin(db: DatabaseSync) {
+  const row = db.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number };
+  if (row.c > 0) return;
+
+  const username = process.env.INIT_ADMIN_USERNAME || 'boss';
+  const password = process.env.INIT_ADMIN_PASSWORD || 'boss123';
+  const fullName = process.env.INIT_ADMIN_NAME || 'หัวหน้าทีม (default)';
+  const hash = bcrypt.hashSync(password, 10);
+
+  db.prepare(
+    'INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)'
+  ).run(username, hash, fullName, 'supervisor');
+
+  console.log(
+    `[insurance-app] No users found — created default supervisor "${username}". ` +
+      (process.env.INIT_ADMIN_PASSWORD
+        ? 'Password from INIT_ADMIN_PASSWORD env.'
+        : 'Default password: boss123 — CHANGE IT IMMEDIATELY.')
+  );
 }
 
 function safeAddColumn(db: DatabaseSync, table: string, columnDdl: string) {
