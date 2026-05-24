@@ -105,21 +105,29 @@ export async function deleteCustomer(id: number) {
 
 export async function createPolicy(customerId: number, formData: FormData) {
   await assertCustomerOwnership(customerId);
+  const premium = n(formData.get('premium'));
+  const commissionRate = n(formData.get('commission_rate'));
+  const commissionAmount = +(premium * commissionRate / 100).toFixed(2);
   getDb()
     .prepare(
-      `INSERT INTO policies (customer_id, policy_no, product_name, payment_type, premium, sum_insured, start_date, end_date, status, note)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO policies
+        (customer_id, policy_no, product_name, payment_type, premium, sum_insured,
+         start_date, end_date, status, commission_type, commission_rate, commission_amount, note)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
     )
     .run(
       customerId,
       s(formData.get('policy_no')),
       String(formData.get('product_name') || '').trim(),
       String(formData.get('payment_type') || '').trim(),
-      n(formData.get('premium')),
+      premium,
       n(formData.get('sum_insured')),
       String(formData.get('start_date') || '').trim(),
       String(formData.get('end_date') || '').trim(),
       String(formData.get('status') || 'active'),
+      String(formData.get('commission_type') || 'FYC'),
+      commissionRate,
+      commissionAmount,
       s(formData.get('note'))
     );
   revalidatePath(`/customers/${customerId}`);
@@ -251,7 +259,73 @@ export async function resetAgentPassword(agentId: number, formData: FormData) {
   redirect('/supervisor/team');
 }
 
+// ─── Claims ──────────────────────────────────────────────────────────────
+
+export async function createClaim(policyId: number, customerId: number, formData: FormData) {
+  const { user } = await assertCustomerOwnership(customerId);
+  getDb()
+    .prepare(
+      `INSERT INTO claims (policy_id, claim_date, claim_type, amount, status, note, created_by)
+       VALUES (?,?,?,?,?,?,?)`
+    )
+    .run(
+      policyId,
+      String(formData.get('claim_date') || new Date().toISOString().slice(0, 10)),
+      String(formData.get('claim_type') || 'other'),
+      n(formData.get('amount')),
+      String(formData.get('status') || 'pending'),
+      s(formData.get('note')),
+      user.id
+    );
+  revalidatePath(`/customers/${customerId}`);
+  redirect(`/customers/${customerId}#policy-${policyId}`);
+}
+
+export async function updateClaimStatus(claimId: number, policyId: number, customerId: number, formData: FormData) {
+  await assertCustomerOwnership(customerId);
+  const status = String(formData.get('status') || 'pending');
+  const resolved_at = status === 'approved' || status === 'rejected'
+    ? `datetime('now')` : 'NULL';
+  getDb()
+    .prepare(`UPDATE claims SET status=?, resolved_at=${resolved_at === 'NULL' ? 'NULL' : "datetime('now')"} WHERE id=? AND policy_id=?`)
+    .run(status, claimId, policyId);
+  revalidatePath(`/customers/${customerId}`);
+  redirect(`/customers/${customerId}#policy-${policyId}`);
+}
+
+// ─── Products ────────────────────────────────────────────────────────────
+
+export async function createProduct(formData: FormData) {
+  await requireSupervisor();
+  const code = String(formData.get('code') || '').trim().toUpperCase();
+  const name = String(formData.get('name') || '').trim();
+  if (!code || !name) redirect('/supervisor/products?e=missing');
+  const exists = getDb().prepare('SELECT id FROM products WHERE code=?').get(code);
+  if (exists) redirect('/supervisor/products?e=dup');
+  getDb()
+    .prepare('INSERT INTO products (code, name, category, default_commission_rate) VALUES (?,?,?,?)')
+    .run(code, name, String(formData.get('category') || 'life'), n(formData.get('default_commission_rate')) || 20);
+  revalidatePath('/supervisor/products');
+  redirect('/supervisor/products');
+}
+
+export async function toggleProduct(productId: number) {
+  await requireSupervisor();
+  getDb().prepare('UPDATE products SET is_active = 1 - is_active WHERE id=?').run(productId);
+  revalidatePath('/supervisor/products');
+  redirect('/supervisor/products');
+}
+
 // ─── Profile / Change password ────────────────────────────────────────────
+
+export async function updateLicense(formData: FormData) {
+  const u = await requireUser();
+  getDb()
+    .prepare('UPDATE users SET license_no=?, license_expiry=? WHERE id=?')
+    .run(s(formData.get('license_no')), s(formData.get('license_expiry')), u.id);
+  revalidatePath('/profile');
+  redirect('/profile?ok=1');
+}
 
 export async function changePassword(formData: FormData) {
   const u = await requireUser();

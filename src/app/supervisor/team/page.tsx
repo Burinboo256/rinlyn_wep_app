@@ -8,6 +8,8 @@ const supNav = [
   { href: '/supervisor/customers', label: 'ลูกค้าทีม' },
   { href: '/supervisor/team', label: 'จัดการตัวแทน' },
   { href: '/supervisor/expiring', label: 'ใกล้หมดอายุ' },
+  { href: '/supervisor/products', label: 'ผลิตภัณฑ์' },
+  { href: '/supervisor/commission', label: 'ค่าคอม' },
 ];
 
 export default async function TeamPage({ searchParams }: { searchParams: { e?: string } }) {

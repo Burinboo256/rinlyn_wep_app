@@ -75,6 +75,45 @@ function init(db: DatabaseSync) {
   safeAddColumn(db, 'policies', 'status_changed_at TEXT');
   safeAddColumn(db, 'policies', 'lapse_reason TEXT');
 
+  /* products catalogue */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'life',
+      default_commission_rate REAL DEFAULT 20,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
+  /* commission on policies */
+  safeAddColumn(db, 'policies', 'commission_type TEXT DEFAULT "FYC"');
+  safeAddColumn(db, 'policies', 'commission_rate REAL DEFAULT 0');
+  safeAddColumn(db, 'policies', 'commission_amount REAL DEFAULT 0');
+
+  /* agent licence */
+  safeAddColumn(db, 'users', 'license_no TEXT');
+  safeAddColumn(db, 'users', 'license_expiry TEXT');
+
+  /* claims */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      policy_id INTEGER NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+      claim_date TEXT NOT NULL,
+      claim_type TEXT NOT NULL,
+      amount REAL DEFAULT 0,
+      status TEXT DEFAULT 'pending',
+      note TEXT,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      resolved_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_claims_policy ON claims(policy_id);
+  `);
+
   /* beneficiaries per policy */
   db.exec(`
     CREATE TABLE IF NOT EXISTS policy_beneficiaries (
@@ -105,6 +144,24 @@ function bootstrapDefaultAdmin(db: DatabaseSync) {
   db.prepare(
     'INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)'
   ).run(username, hash, fullName, 'supervisor');
+
+  /* seed starter products */
+  const prodCount = (db.prepare('SELECT COUNT(*) AS c FROM products').get() as any).c;
+  if (prodCount === 0) {
+    const insertProd = db.prepare(
+      'INSERT OR IGNORE INTO products (code, name, category, default_commission_rate) VALUES (?,?,?,?)'
+    );
+    [
+      ['WL001', 'ประกันชีวิตตลอดชีพ', 'life', 25],
+      ['EN001', 'ประกันสะสมทรัพย์ 10/5', 'life', 20],
+      ['EN002', 'ประกันสะสมทรัพย์ 20/10', 'life', 20],
+      ['TM001', 'ประกันชีวิตชั่วระยะเวลา 10 ปี', 'life', 30],
+      ['AN001', 'ประกันบำนาญ', 'annuity', 15],
+      ['HL001', 'ประกันสุขภาพรายปี', 'health', 20],
+      ['CI001', 'ประกันโรคร้ายแรง', 'health', 25],
+      ['PA001', 'ประกันอุบัติเหตุ (PA)', 'pa', 20],
+    ].forEach(([code, name, cat, rate]) => insertProd.run(code, name, cat, rate));
+  }
 
   console.log(
     `[insurance-app] No users found — created default supervisor "${username}". ` +

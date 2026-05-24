@@ -14,6 +14,27 @@ export type Customer = {
   next_contact_date: string | null;
 };
 
+export type Product = {
+  id: number;
+  code: string;
+  name: string;
+  category: string;
+  default_commission_rate: number;
+  is_active: number;
+};
+
+export type Claim = {
+  id: number;
+  policy_id: number;
+  claim_date: string;
+  claim_type: string;
+  amount: number;
+  status: string;
+  note: string | null;
+  created_by: number | null;
+  resolved_at: string | null;
+};
+
 export type Policy = {
   id: number;
   customer_id: number;
@@ -28,6 +49,9 @@ export type Policy = {
   status_changed_at: string | null;
   lapse_reason: string | null;
   deleted_at: string | null;
+  commission_type: string;
+  commission_rate: number;
+  commission_amount: number;
   note: string | null;
 };
 
@@ -270,6 +294,70 @@ export function newPoliciesToday(agentIds: number[]) {
     )
     .get(...agentIds) as any;
   return row.c as number;
+}
+
+export function listProducts() {
+  return getDb().prepare('SELECT * FROM products WHERE is_active=1 ORDER BY category, name').all() as Product[];
+}
+
+export function listClaimsByPolicy(policyId: number) {
+  return getDb()
+    .prepare(
+      `SELECT cl.*, u.full_name as creator_name
+       FROM claims cl LEFT JOIN users u ON u.id = cl.created_by
+       WHERE cl.policy_id = ? ORDER BY cl.claim_date DESC`
+    )
+    .all(policyId) as (Claim & { creator_name: string | null })[];
+}
+
+export function commissionSummary(agentIds: number[], year?: number) {
+  if (agentIds.length === 0) return { fyc: 0, ryc: 0, total: 0 };
+  const placeholders = agentIds.map(() => '?').join(',');
+  const yr = year ?? new Date().getFullYear();
+  const row = getDb()
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN p.commission_type='FYC' THEN p.commission_amount ELSE 0 END),0) as fyc,
+         COALESCE(SUM(CASE WHEN p.commission_type='RYC' THEN p.commission_amount ELSE 0 END),0) as ryc,
+         COALESCE(SUM(p.commission_amount),0) as total
+       FROM policies p JOIN customers c ON c.id = p.customer_id
+       WHERE c.agent_id IN (${placeholders})
+         AND p.deleted_at IS NULL
+         AND strftime('%Y', p.start_date) = ?`
+    )
+    .get(...agentIds, String(yr)) as any;
+  return { fyc: row.fyc, ryc: row.ryc, total: row.total };
+}
+
+export function agentCommissionBreakdown(supId: number, year?: number) {
+  const yr = year ?? new Date().getFullYear();
+  return getDb()
+    .prepare(
+      `SELECT u.id, u.full_name, u.username,
+              COALESCE(SUM(CASE WHEN p.commission_type='FYC' THEN p.commission_amount ELSE 0 END),0) as fyc,
+              COALESCE(SUM(CASE WHEN p.commission_type='RYC' THEN p.commission_amount ELSE 0 END),0) as ryc,
+              COALESCE(SUM(p.commission_amount),0) as total
+       FROM users u
+       LEFT JOIN customers c ON c.agent_id = u.id
+       LEFT JOIN policies p ON p.customer_id = c.id
+         AND p.deleted_at IS NULL
+         AND strftime('%Y', p.start_date) = ?
+       WHERE u.supervisor_id = ? AND u.role = 'agent'
+       GROUP BY u.id ORDER BY total DESC`
+    )
+    .all(String(yr), supId) as any[];
+}
+
+export function expiringLicenses(supId: number, days: number) {
+  return getDb()
+    .prepare(
+      `SELECT * FROM users
+       WHERE (supervisor_id = ? OR id = ?)
+         AND license_expiry IS NOT NULL
+         AND date(license_expiry) <= date('now', '+${days} days')
+       ORDER BY license_expiry ASC`
+    )
+    .all(supId, supId) as any[];
 }
 
 export function persistencyRate(agentIds: number[], months: number) {
