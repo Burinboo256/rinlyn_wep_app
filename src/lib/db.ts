@@ -70,6 +70,26 @@ function init(db: DatabaseSync) {
 
   safeAddColumn(db, 'customers', 'next_contact_date TEXT');
 
+  /* policies: soft-delete + lapse workflow */
+  safeAddColumn(db, 'policies', 'deleted_at TEXT');
+  safeAddColumn(db, 'policies', 'status_changed_at TEXT');
+  safeAddColumn(db, 'policies', 'lapse_reason TEXT');
+
+  /* beneficiaries per policy */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS policy_beneficiaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      policy_id INTEGER NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      relation TEXT,
+      share_pct REAL DEFAULT 100,
+      phone TEXT,
+      note TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_bene_policy ON policy_beneficiaries(policy_id);
+  `);
+
   bootstrapDefaultAdmin(db);
 }
 

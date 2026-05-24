@@ -25,12 +25,12 @@ export default function Shell({
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">
-            <span className="text-slate-600">
+            <Link href="/profile" className="text-slate-600 hover:text-indigo-700">
               {user.full_name}{' '}
               <span className="badge bg-slate-200 text-slate-700">
                 {user.role === 'supervisor' ? 'หัวหน้า' : 'ตัวแทน'}
               </span>
-            </span>
+            </Link>
             <a href="/logout" className="btn-ghost">ออกจากระบบ</a>
           </div>
         </div>

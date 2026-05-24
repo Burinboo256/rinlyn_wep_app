@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { getDb } from './db';
-import { requireUser, requireSupervisor, hashPassword } from './auth';
+import { requireUser, requireSupervisor, hashPassword, verifyPassword } from './auth';
 import { getCustomer } from './queries';
 import { normalizeThaiId, validateThaiId } from './validators';
 
@@ -40,6 +40,8 @@ function validateCustomerInput(formData: FormData, excludeId?: number): string |
   }
   return null;
 }
+
+// ─── Customer ──────────────────────────────────────────────────────────────
 
 export async function createCustomer(formData: FormData) {
   const u = await requireUser();
@@ -99,6 +101,8 @@ export async function deleteCustomer(id: number) {
   redirect('/agent');
 }
 
+// ─── Policy ──────────────────────────────────────────────────────────────
+
 export async function createPolicy(customerId: number, formData: FormData) {
   await assertCustomerOwnership(customerId);
   getDb()
@@ -122,12 +126,61 @@ export async function createPolicy(customerId: number, formData: FormData) {
   redirect(`/customers/${customerId}`);
 }
 
-export async function deletePolicy(policyId: number, customerId: number) {
+export async function updatePolicyStatus(
+  policyId: number, customerId: number, formData: FormData
+) {
   await assertCustomerOwnership(customerId);
-  getDb().prepare('DELETE FROM policies WHERE id = ? AND customer_id = ?').run(policyId, customerId);
+  const status = String(formData.get('status') || 'active');
+  const lapse_reason = s(formData.get('lapse_reason'));
+  getDb()
+    .prepare(
+      `UPDATE policies SET status=?, status_changed_at=datetime('now'), lapse_reason=? WHERE id=? AND customer_id=? AND deleted_at IS NULL`
+    )
+    .run(status, lapse_reason, policyId, customerId);
   revalidatePath(`/customers/${customerId}`);
   redirect(`/customers/${customerId}`);
 }
+
+export async function softDeletePolicy(policyId: number, customerId: number) {
+  await assertCustomerOwnership(customerId);
+  getDb()
+    .prepare(`UPDATE policies SET deleted_at=datetime('now'), status='cancelled' WHERE id=? AND customer_id=?`)
+    .run(policyId, customerId);
+  revalidatePath(`/customers/${customerId}`);
+  redirect(`/customers/${customerId}`);
+}
+
+// ─── Beneficiary ─────────────────────────────────────────────────────────
+
+export async function createBeneficiary(policyId: number, customerId: number, formData: FormData) {
+  await assertCustomerOwnership(customerId);
+  getDb()
+    .prepare(
+      `INSERT INTO policy_beneficiaries (policy_id, name, relation, share_pct, phone, note)
+       VALUES (?,?,?,?,?,?)`
+    )
+    .run(
+      policyId,
+      String(formData.get('name') || '').trim(),
+      s(formData.get('relation')),
+      n(formData.get('share_pct')) || 100,
+      s(formData.get('phone')),
+      s(formData.get('note'))
+    );
+  revalidatePath(`/customers/${customerId}`);
+  redirect(`/customers/${customerId}#policy-${policyId}`);
+}
+
+export async function deleteBeneficiary(beneId: number, policyId: number, customerId: number) {
+  await assertCustomerOwnership(customerId);
+  getDb()
+    .prepare('DELETE FROM policy_beneficiaries WHERE id=? AND policy_id=?')
+    .run(beneId, policyId);
+  revalidatePath(`/customers/${customerId}`);
+  redirect(`/customers/${customerId}#policy-${policyId}`);
+}
+
+// ─── Contact ─────────────────────────────────────────────────────────────
 
 export async function createContact(customerId: number, formData: FormData) {
   const { user } = await assertCustomerOwnership(customerId);
@@ -158,6 +211,8 @@ export async function deleteContact(contactId: number, customerId: number) {
   revalidatePath(`/customers/${customerId}`);
   redirect(`/customers/${customerId}`);
 }
+
+// ─── Team management ─────────────────────────────────────────────────────
 
 export async function createAgent(formData: FormData) {
   const sup = await requireSupervisor();
@@ -194,4 +249,22 @@ export async function resetAgentPassword(agentId: number, formData: FormData) {
     .run(hash, agentId, sup.id);
   revalidatePath('/supervisor/team');
   redirect('/supervisor/team');
+}
+
+// ─── Profile / Change password ────────────────────────────────────────────
+
+export async function changePassword(formData: FormData) {
+  const u = await requireUser();
+  const current = String(formData.get('current_password') || '');
+  const next = String(formData.get('new_password') || '');
+  const confirm = String(formData.get('confirm_password') || '');
+  if (!current || !next || !confirm) redirect('/profile?e=missing');
+  if (next !== confirm) redirect('/profile?e=mismatch');
+  if (next.length < 6) redirect('/profile?e=short');
+  const row = getDb().prepare('SELECT password_hash FROM users WHERE id = ?').get(u.id) as any;
+  const ok = await verifyPassword(current, row.password_hash);
+  if (!ok) redirect('/profile?e=wrong');
+  const hash = await hashPassword(next);
+  getDb().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, u.id);
+  redirect('/profile?ok=1');
 }

@@ -25,6 +25,19 @@ export type Policy = {
   start_date: string;
   end_date: string;
   status: string;
+  status_changed_at: string | null;
+  lapse_reason: string | null;
+  deleted_at: string | null;
+  note: string | null;
+};
+
+export type Beneficiary = {
+  id: number;
+  policy_id: number;
+  name: string;
+  relation: string | null;
+  share_pct: number;
+  phone: string | null;
   note: string | null;
 };
 
@@ -40,8 +53,7 @@ export type Contact = {
 };
 
 function buildSearch(q: string) {
-  const like = `%${q.replace(/[%_]/g, (m) => '\\' + m)}%`;
-  return like;
+  return `%${q.replace(/[%_]/g, (m) => '\\' + m)}%`;
 }
 
 export function listCustomersByAgent(agentId: number, opts: { q?: string } = {}) {
@@ -55,7 +67,9 @@ export function listCustomersByAgent(agentId: number, opts: { q?: string } = {})
   }
   return getDb()
     .prepare(
-      `SELECT c.*, COUNT(p.id) as policy_count, COALESCE(SUM(p.premium),0) as total_premium
+      `SELECT c.*,
+              COUNT(CASE WHEN p.deleted_at IS NULL THEN 1 END) as policy_count,
+              COALESCE(SUM(CASE WHEN p.deleted_at IS NULL THEN p.premium ELSE 0 END),0) as total_premium
        FROM customers c LEFT JOIN policies p ON p.customer_id = c.id
        WHERE ${where} GROUP BY c.id ORDER BY c.created_at DESC`
     )
@@ -73,12 +87,13 @@ export function listCustomersBySupervisor(supId: number, opts: { q?: string } = 
   }
   return getDb()
     .prepare(
-      `SELECT c.*, u.full_name as agent_name, COUNT(p.id) as policy_count, COALESCE(SUM(p.premium),0) as total_premium
+      `SELECT c.*, u.full_name as agent_name,
+              COUNT(CASE WHEN p.deleted_at IS NULL THEN 1 END) as policy_count,
+              COALESCE(SUM(CASE WHEN p.deleted_at IS NULL THEN p.premium ELSE 0 END),0) as total_premium
        FROM customers c
        JOIN users u ON u.id = c.agent_id
        LEFT JOIN policies p ON p.customer_id = c.id
-       WHERE ${where}
-       GROUP BY c.id ORDER BY c.created_at DESC`
+       WHERE ${where} GROUP BY c.id ORDER BY c.created_at DESC`
     )
     .all(...params) as any[];
 }
@@ -88,7 +103,21 @@ export function getCustomer(id: number) {
 }
 
 export function listPoliciesByCustomer(customerId: number) {
-  return getDb().prepare('SELECT * FROM policies WHERE customer_id = ? ORDER BY end_date ASC').all(customerId) as Policy[];
+  return getDb()
+    .prepare('SELECT * FROM policies WHERE customer_id = ? AND deleted_at IS NULL ORDER BY end_date ASC')
+    .all(customerId) as Policy[];
+}
+
+export function listDeletedPoliciesByCustomer(customerId: number) {
+  return getDb()
+    .prepare('SELECT * FROM policies WHERE customer_id = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC')
+    .all(customerId) as Policy[];
+}
+
+export function listBeneficiariesByPolicy(policyId: number) {
+  return getDb()
+    .prepare('SELECT * FROM policy_beneficiaries WHERE policy_id = ? ORDER BY id ASC')
+    .all(policyId) as Beneficiary[];
 }
 
 export function listContactsByCustomer(customerId: number) {
@@ -107,9 +136,9 @@ export function listAgents(supId: number) {
     .prepare(
       `SELECT u.*,
               COUNT(DISTINCT c.id) as customer_count,
-              COUNT(p.id) as policy_count,
-              COALESCE(SUM(p.premium),0) as total_premium,
-              MAX(p.created_at) as last_policy_at
+              COUNT(CASE WHEN p.deleted_at IS NULL THEN 1 END) as policy_count,
+              COALESCE(SUM(CASE WHEN p.deleted_at IS NULL THEN p.premium ELSE 0 END),0) as total_premium,
+              MAX(CASE WHEN p.deleted_at IS NULL THEN p.created_at END) as last_policy_at
        FROM users u
        LEFT JOIN customers c ON c.agent_id = u.id
        LEFT JOIN policies p ON p.customer_id = c.id
@@ -129,6 +158,8 @@ export function expiringPolicies(scopeAgentIds: number[], days: number) {
        JOIN customers c ON c.id = p.customer_id
        JOIN users u ON u.id = c.agent_id
        WHERE c.agent_id IN (${placeholders})
+         AND p.deleted_at IS NULL
+         AND p.status = 'active'
          AND date(p.end_date) <= date('now', '+${days} days')
          AND date(p.end_date) >= date('now')
        ORDER BY p.end_date ASC`
@@ -152,19 +183,43 @@ export function dueContacts(agentIds: number[], horizonDays: number) {
     .all(...agentIds) as any[];
 }
 
+export function upcomingBirthdays(agentIds: number[], days: number) {
+  if (agentIds.length === 0) return [];
+  const placeholders = agentIds.map(() => '?').join(',');
+  // Compare month-day portion across a rolling window
+  return getDb()
+    .prepare(
+      `SELECT c.*, u.full_name as agent_name,
+              strftime('%m-%d', c.dob) as bday_md,
+              (strftime('%Y','now') || '-' || strftime('%m-%d', c.dob)) as bday_this_year
+       FROM customers c
+       JOIN users u ON u.id = c.agent_id
+       WHERE c.agent_id IN (${placeholders})
+         AND c.dob IS NOT NULL
+         AND (
+           date(strftime('%Y','now') || '-' || strftime('%m-%d', c.dob))
+             BETWEEN date('now') AND date('now','+${days} days')
+           OR
+           date((CAST(strftime('%Y','now') AS INT)+1) || '-' || strftime('%m-%d', c.dob))
+             BETWEEN date('now') AND date('now','+${days} days')
+         )
+       ORDER BY bday_md ASC`
+    )
+    .all(...agentIds) as any[];
+}
+
 export function teamSummary(supId: number) {
   const db = getDb();
   const agentIds = (db.prepare('SELECT id FROM users WHERE supervisor_id = ? AND role = ?').all(supId, 'agent') as any[])
     .map((r) => r.id);
   const ids = [...agentIds, supId];
-  if (ids.length === 0) return { customers: 0, policies: 0, premium: 0, agentIds: ids };
   const placeholders = ids.map(() => '?').join(',');
   const customers = (db.prepare(`SELECT COUNT(*) c FROM customers WHERE agent_id IN (${placeholders})`).get(...ids) as any).c;
   const row = db
     .prepare(
       `SELECT COUNT(p.id) c, COALESCE(SUM(p.premium),0) prem
        FROM policies p JOIN customers cu ON cu.id = p.customer_id
-       WHERE cu.agent_id IN (${placeholders})`
+       WHERE cu.agent_id IN (${placeholders}) AND p.deleted_at IS NULL`
     )
     .get(...ids) as any;
   return { customers, policies: row.c, premium: row.prem, agentIds: ids };
@@ -179,7 +234,8 @@ export function fypMonthToDate(agentIds: number[]) {
        FROM policies p JOIN customers cu ON cu.id = p.customer_id
        WHERE cu.agent_id IN (${placeholders})
          AND date(p.start_date) >= date('now','start of month')
-         AND p.status != 'cancelled'`
+         AND p.status != 'cancelled'
+         AND p.deleted_at IS NULL`
     )
     .get(...agentIds) as any;
   return { count: row.c, premium: row.prem };
@@ -189,8 +245,10 @@ export function idleAgents(supId: number, days: number) {
   return getDb()
     .prepare(
       `SELECT u.id, u.full_name, u.username,
-              MAX(p.created_at) as last_policy_at,
-              CAST((julianday('now') - julianday(COALESCE(MAX(p.created_at), u.created_at))) AS INTEGER) as days_idle
+              MAX(CASE WHEN p.deleted_at IS NULL THEN p.created_at END) as last_policy_at,
+              CAST((julianday('now') - julianday(
+                COALESCE(MAX(CASE WHEN p.deleted_at IS NULL THEN p.created_at END), u.created_at)
+              )) AS INTEGER) as days_idle
        FROM users u
        LEFT JOIN customers c ON c.agent_id = u.id
        LEFT JOIN policies p ON p.customer_id = c.id
@@ -208,8 +266,29 @@ export function newPoliciesToday(agentIds: number[]) {
   const row = getDb()
     .prepare(
       `SELECT COUNT(*) c FROM policies p JOIN customers c ON c.id = p.customer_id
-       WHERE c.agent_id IN (${placeholders}) AND date(p.created_at) = date('now')`
+       WHERE c.agent_id IN (${placeholders}) AND date(p.created_at) = date('now') AND p.deleted_at IS NULL`
     )
     .get(...agentIds) as any;
   return row.c as number;
+}
+
+export function persistencyRate(agentIds: number[], months: number) {
+  if (agentIds.length === 0) return { rate: null, active: 0, total: 0 };
+  const placeholders = agentIds.map(() => '?').join(',');
+  // Cohort = policies whose start_date is at least `months` months ago
+  const row = getDb()
+    .prepare(
+      `SELECT
+         COUNT(*) as total,
+         SUM(CASE WHEN p.status = 'active' AND p.deleted_at IS NULL THEN 1 ELSE 0 END) as active
+       FROM policies p
+       JOIN customers c ON c.id = p.customer_id
+       WHERE c.agent_id IN (${placeholders})
+         AND date(p.start_date) <= date('now', '-${months} months')`
+    )
+    .get(...agentIds) as any;
+  const total = row.total as number;
+  const active = row.active as number;
+  const rate = total > 0 ? Math.round((active / total) * 100) : null;
+  return { rate, active, total };
 }
