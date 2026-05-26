@@ -1,8 +1,12 @@
-import { type NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { destroySession } from '@/lib/auth';
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   await destroySession();
-  return NextResponse.redirect(new URL('/login', req.url));
+  // Use a relative Location header so it works behind any reverse proxy (Railway, etc.)
+  return new NextResponse(null, {
+    status: 302,
+    headers: { Location: '/login' },
+  });
 }
 export const POST = GET;
