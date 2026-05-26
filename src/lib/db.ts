@@ -141,9 +141,19 @@ function bootstrapDefaultAdmin(db: DatabaseSync) {
   const fullName = process.env.INIT_ADMIN_NAME || 'หัวหน้าทีม (default)';
   const hash = bcrypt.hashSync(password, 10);
 
-  db.prepare(
+  const supRow = db.prepare(
     'INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)'
   ).run(username, hash, fullName, 'supervisor');
+  const supId = supRow.lastInsertRowid;
+
+  /* seed sample agents (ลบทิ้งได้ภายหลังผ่านหน้า /supervisor/team) */
+  const agentHash = bcrypt.hashSync('agent123', 10);
+  db.prepare(
+    'INSERT INTO users (username, password_hash, full_name, role, supervisor_id) VALUES (?,?,?,?,?)'
+  ).run('agent1', agentHash, 'ตัวแทน สมหญิง (ตัวอย่าง)', 'agent', supId);
+  db.prepare(
+    'INSERT INTO users (username, password_hash, full_name, role, supervisor_id) VALUES (?,?,?,?,?)'
+  ).run('agent2', agentHash, 'ตัวแทน วิชัย (ตัวอย่าง)', 'agent', supId);
 
   /* seed starter products */
   const prodCount = (db.prepare('SELECT COUNT(*) AS c FROM products').get() as any).c;
@@ -164,10 +174,11 @@ function bootstrapDefaultAdmin(db: DatabaseSync) {
   }
 
   console.log(
-    `[insurance-app] No users found — created default supervisor "${username}". ` +
-      (process.env.INIT_ADMIN_PASSWORD
-        ? 'Password from INIT_ADMIN_PASSWORD env.'
-        : 'Default password: boss123 — CHANGE IT IMMEDIATELY.')
+    `[insurance-app] Fresh DB — created:\n` +
+    `  supervisor : ${username} / ${process.env.INIT_ADMIN_PASSWORD ? '(from env)' : 'boss123'}\n` +
+    `  agent1     : agent1 / agent123  (ตัวอย่าง — เปลี่ยนรหัสได้ที่ /supervisor/team)\n` +
+    `  agent2     : agent2 / agent123  (ตัวอย่าง)\n` +
+    (!process.env.INIT_ADMIN_PASSWORD ? '  ⚠️  เปลี่ยนรหัสผ่าน boss ทันทีหลัง login!' : '')
   );
 }
 
