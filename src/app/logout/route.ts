@@ -1,8 +1,8 @@
-import { NextResponse } from 'next/server';
+import { type NextRequest, NextResponse } from 'next/server';
 import { destroySession } from '@/lib/auth';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   await destroySession();
-  return NextResponse.redirect(new URL('/login', process.env.APP_URL || 'http://localhost:3001'));
+  return NextResponse.redirect(new URL('/login', req.url));
 }
 export const POST = GET;
